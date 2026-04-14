@@ -1,0 +1,60 @@
+import { NextResponse } from 'next/server'
+import { createClient } from '@/utils/supabase/server'
+import {
+  buildTelegramReminderMessage,
+  getDueReminderLeads,
+  sendTelegramMessage,
+} from '@/utils/telegramReminder'
+
+export async function GET(req: Request) {
+  try {
+    const authHeader = req.headers.get('authorization')
+    const expected = `Bearer ${process.env.CRON_SECRET}`
+
+    if (!process.env.CRON_SECRET) {
+      return NextResponse.json(
+        { error: 'CRON_SECRET fehlt' },
+        { status: 500 }
+      )
+    }
+
+    if (authHeader !== expected) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      )
+    }
+
+    const supabase = await createClient()
+
+    const { data: leads, error } = await supabase
+      .from('upgrade_requests')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(300)
+
+    if (error) {
+      return NextResponse.json(
+        { error: error.message },
+        { status: 500 }
+      )
+    }
+
+    const rows = leads || []
+    const dueLeads = getDueReminderLeads(rows)
+    const message = buildTelegramReminderMessage(rows)
+
+    await sendTelegramMessage(message)
+
+    return NextResponse.json({
+      success: true,
+      sent_count: dueLeads.length,
+      preview: message,
+    })
+  } catch (error: any) {
+    return NextResponse.json(
+      { error: error?.message || 'Unexpected server error' },
+      { status: 500 }
+    )
+  }
+}

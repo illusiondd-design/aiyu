@@ -1,0 +1,16 @@
+{
+  "posts": [
+    {
+      "platform": "instagram",
+      "content": "Wir zeigen echtes Handwerk aus Dresden.",
+      "caption": "Ein Blick hinter die Kulissen.",
+      "hashtags": ["#holzbau", "#dresden", "#handwerk"]
+    },
+    {
+      "platform": "linkedin",
+      "content": "Automatisierte Content-Prozesse sparen Zeit.",
+      "caption": "Mehr Struktur für KMU-Marketing.",
+      "hashtags": ["#automation", "#kmu", "#marketing"]
+    }
+  ]
+}

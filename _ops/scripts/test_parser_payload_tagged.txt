@@ -1,0 +1,13 @@
+POST_START
+platform: instagram
+content: Wir zeigen echte Einblicke ins Handwerk.
+caption: Kurzer Einblick in unseren Alltag.
+hashtags: #holzbau,#handwerk,#dresden
+POST_END
+
+POST_START
+platform: linkedin
+content: Automatisierte Prozesse sparen KMU Zeit.
+caption: Mehr Struktur im Marketing durch Automation.
+hashtags: #automation,#kmu,#marketing
+POST_END

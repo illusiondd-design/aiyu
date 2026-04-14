@@ -1,0 +1,83 @@
+import { getCompanyById } from "@/data/companies";
+
+export type GeneratedPlatformContent = {
+  title: string;
+  caption: string;
+  hashtags: string[];
+  cta: string;
+};
+
+export type GeneratedResult = {
+  ideaTitle: string;
+  masterHook: string;
+  companyId: string;
+  rawInput: string;
+  platforms: Record<string, GeneratedPlatformContent>;
+};
+
+function buildHashtags(companyId: string, platformId: string) {
+  const baseMap: Record<string, string[]> = {
+    robs_kfz: ["#kfz", "#werkstatt", "#autotipp", "#reparatur", "#service"],
+    ki_studio_labs: ["#ai", "#automation", "#marketing", "#kmu", "#content"],
+    tom_carpender: ["#handwerk", "#lifestyle", "#carpender", "#motivation", "#macher"],
+    jetsurf: ["#jetsurf", "#lifestyle", "#premium", "#action", "#adventure"],
+  };
+
+  const platformMap: Record<string, string[]> = {
+    instagram: ["#instagram", "#reels"],
+    tiktok: ["#tiktok", "#fyp"],
+    facebook: ["#facebook"],
+    youtube: ["#shorts", "#youtube"],
+    linkedin: ["#linkedin", "#business"],
+  };
+
+  return [...(baseMap[companyId] || ["#content"]), ...(platformMap[platformId] || [])].slice(0, 6);
+}
+
+function buildCaption(rawInput: string, companyId: string, platformId: string) {
+  const company = getCompanyById(companyId);
+
+  const prefixMap: Record<string, string> = {
+    instagram: "Heute aus dem Alltag:",
+    tiktok: "Kurz erklärt:",
+    facebook: "Ein Einblick aus dem Betrieb:",
+    youtube: "Darum ist das wichtig:",
+    linkedin: "Praxisbeispiel aus dem Alltag:",
+  };
+
+  return `${prefixMap[platformId] || "Heute:"} ${rawInput}
+
+${(company as any).cta || ''}`;
+}
+
+export function generateLocalContent(params: {
+  companyId: string;
+  rawInput: string;
+  selectedPlatforms: string[];
+}): GeneratedResult {
+  const { companyId, rawInput, selectedPlatforms } = params;
+  const company = getCompanyById(companyId);
+
+  const masterHook = `${company.name}: ${rawInput}`;
+  const ideaTitle = rawInput.slice(0, 60) || "Neuer Beitrag";
+
+  const platforms = Object.fromEntries(
+    selectedPlatforms.map((platformId) => [
+      platformId,
+      {
+        title: `${company.name} – ${platformId}`,
+        caption: buildCaption(rawInput, companyId, platformId),
+        hashtags: buildHashtags(companyId, platformId),
+        cta: company.cta,
+      },
+    ])
+  );
+
+  return {
+    ideaTitle,
+    masterHook,
+    companyId,
+    rawInput,
+    platforms,
+  };
+}

@@ -1,0 +1,285 @@
+import PDFDocument from 'pdfkit'
+import { createClient } from '@/utils/supabase/server'
+import { readReminderLog } from '@/utils/telegramReminderLog'
+
+type Lead = {
+  id?: string
+  name?: string | null
+  email?: string | null
+  requested_package?: string | null
+  lead_score?: number | null
+  lead_type?: string | null
+  status?: string | null
+  hot_alert_sent?: boolean | null
+  follow_up_at?: string | null
+  internal_note?: string | null
+  message?: string | null
+  priority?: string | null
+  closed?: boolean | null
+  created_at?: string | null
+}
+
+function toStartOfDay(date: Date) {
+  const d = new Date(date)
+  d.setHours(0, 0, 0, 0)
+  return d
+}
+
+function isOverdue(value?: string | null, closed?: boolean | null) {
+  if (!value || closed === true) return false
+  const today = toStartOfDay(new Date())
+  const date = toStartOfDay(new Date(value))
+  if (Number.isNaN(date.getTime())) return false
+  return date < today
+}
+
+function isToday(value?: string | null, closed?: boolean | null) {
+  if (!value || closed === true) return false
+  const today = toStartOfDay(new Date())
+  const date = toStartOfDay(new Date(value))
+  if (Number.isNaN(date.getTime())) return false
+  return date.getTime() === today.getTime()
+}
+
+function formatDateTimeDE(value?: string | null) {
+  if (!value) return '-'
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return '-'
+  return d.toLocaleString('de-DE')
+}
+
+function drawSectionTitle(doc: PDFKit.PDFDocument, title: string) {
+  doc.moveDown(0.8)
+  doc.font('Helvetica-Bold').fontSize(15).fillColor('#111827').text(title)
+  doc.moveDown(0.3)
+  doc.strokeColor('#d1d5db').lineWidth(1).moveTo(50, doc.y).lineTo(545, doc.y).stroke()
+  doc.moveDown(0.6)
+}
+
+function drawKpiGrid(doc: PDFKit.PDFDocument, items: { label: string; value: string | number }[]) {
+  const startX = 50
+  const startY = doc.y
+  const boxW = 156
+  const boxH = 58
+  const gap = 10
+
+  items.forEach((item, i) => {
+    const row = Math.floor(i / 3)
+    const col = i % 3
+    const x = startX + col * (boxW + gap)
+    const y = startY + row * (boxH + gap)
+
+    doc.roundedRect(x, y, boxW, boxH, 8).fillAndStroke('#f8fafc', '#d1d5db')
+    doc.fillColor('#6b7280').font('Helvetica').fontSize(10).text(item.label, x + 10, y + 10, {
+      width: boxW - 20,
+    })
+    doc.fillColor('#111827').font('Helvetica-Bold').fontSize(20).text(String(item.value), x + 10, y + 26, {
+      width: boxW - 20,
+    })
+  })
+
+  const rows = Math.ceil(items.length / 3)
+  doc.y = startY + rows * (boxH + gap) + 4
+}
+
+function drawSimpleTable(
+  doc: PDFKit.PDFDocument,
+  title: string,
+  rows: string[][],
+  columnWidths: number[]
+) {
+  drawSectionTitle(doc, title)
+
+  const tableX = 50
+  let y = doc.y
+  const rowHeight = 22
+  const tableWidth = columnWidths.reduce((a, b) => a + b, 0)
+
+  const headers = rows[0] || []
+  doc.roundedRect(tableX, y, tableWidth, rowHeight, 6).fillAndStroke('#111827', '#111827')
+
+  let currentX = tableX
+  headers.forEach((header, i) => {
+    doc.fillColor('#ffffff')
+      .font('Helvetica-Bold')
+      .fontSize(9)
+      .text(header, currentX + 6, y + 7, {
+        width: columnWidths[i] - 12,
+        ellipsis: true,
+      })
+    currentX += columnWidths[i]
+  })
+
+  y += rowHeight
+
+  rows.slice(1).forEach((row, index) => {
+    const bg = index % 2 === 0 ? '#f9fafb' : '#ffffff'
+    doc.rect(tableX, y, tableWidth, rowHeight).fillAndStroke(bg, '#e5e7eb')
+
+    let x = tableX
+    row.forEach((cell, i) => {
+      doc.fillColor('#111827')
+        .font('Helvetica')
+        .fontSize(8.5)
+        .text(cell, x + 6, y + 7, {
+          width: columnWidths[i] - 12,
+          ellipsis: true,
+        })
+      x += columnWidths[i]
+    })
+
+    y += rowHeight
+
+    if (y > 740) {
+      doc.addPage()
+      y = 50
+    }
+  })
+
+  doc.y = y + 10
+}
+
+export async function GET() {
+  const supabase = await createClient()
+  const automationLog = readReminderLog()
+
+  const { data: leads, error } = await supabase
+    .from('upgrade_requests')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(300)
+
+  if (error) {
+    return new Response(error.message, { status: 500 })
+  }
+
+  const all: Lead[] = leads || []
+  const openStatuses = ['new', 'processing', 'notified', 'missing_email']
+
+  const totalLeads = all.length
+  const openLeads = all.filter((l) => openStatuses.includes(l.status || '')).length
+  const hotLeads = all.filter((l) => (l.lead_type || '').toLowerCase() === 'hot' && l.closed !== true)
+  const dueLeads = all.filter((l) => isOverdue(l.follow_up_at, l.closed) || isToday(l.follow_up_at, l.closed))
+  const overdueCount = all.filter((l) => isOverdue(l.follow_up_at, l.closed)).length
+  const todayCount = all.filter((l) => isToday(l.follow_up_at, l.closed)).length
+
+  const doc = new PDFDocument({
+    size: 'A4',
+    margin: 50,
+    info: {
+      Title: 'Postmeister Management Report',
+      Author: 'OpenAI',
+      Subject: 'Dashboard KPI Report',
+    },
+  })
+
+  const chunks: Buffer[] = []
+
+  doc.on('data', (chunk) => chunks.push(chunk))
+  const done = new Promise<Buffer>((resolve) => {
+    doc.on('end', () => resolve(Buffer.concat(chunks)))
+  })
+
+  // Cover / Header
+  doc.fillColor('#111827').font('Helvetica-Bold').fontSize(24).text('POSTMEISTER', 50, 48)
+  doc.fillColor('#4f46e5').fontSize(16).text('Management Report', 50, 78)
+  doc.fillColor('#6b7280').font('Helvetica').fontSize(10).text(
+    `Erstellt am ${new Date().toLocaleString('de-DE')}`,
+    50,
+    102
+  )
+
+  doc.roundedRect(360, 42, 185, 74, 12).fillAndStroke('#111827', '#111827')
+  doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(13).text('Automation Status', 375, 58)
+  doc.font('Helvetica').fontSize(10).text(`Status: ${automationLog.last_status || 'unknown'}`, 375, 82)
+  doc.text(`Letzter Versand: ${formatDateTimeDE(automationLog.last_sent_at)}`, 375, 97)
+
+  doc.moveDown(4.5)
+
+  drawSectionTitle(doc, 'KPI Übersicht')
+  drawKpiGrid(doc, [
+    { label: 'Gesamtleads', value: totalLeads },
+    { label: 'Offene Leads', value: openLeads },
+    { label: 'Hot Leads', value: hotLeads.length },
+    { label: 'Überfällig', value: overdueCount },
+    { label: 'Heute fällig', value: todayCount },
+    { label: 'Reminder Versand', value: automationLog.last_sent_count || 0 },
+  ])
+
+  drawSectionTitle(doc, 'Management Summary')
+  doc.font('Helvetica').fontSize(10).fillColor('#111827')
+  doc.text(
+    `Postmeister verwaltet aktuell ${totalLeads} Leads. Davon sind ${openLeads} offen. ` +
+      `${hotLeads.length} Leads sind als HOT klassifiziert. ${overdueCount} Follow-ups sind überfällig, ` +
+      `${todayCount} sind heute fällig. Der letzte Telegram-Digest hatte den Status ` +
+      `"${automationLog.last_status || 'unknown'}".`,
+    {
+      width: 495,
+      align: 'left',
+      lineGap: 3,
+    }
+  )
+
+  const hotRows = [
+    ['Name', 'Paket', 'Score', 'Priorität', 'Status', 'Follow-up'],
+    ...hotLeads.slice(0, 10).map((lead) => [
+      String(lead.name || '-'),
+      String(lead.requested_package || '-'),
+      String(lead.lead_score ?? '-'),
+      String(lead.priority || '-'),
+      String(lead.status || '-'),
+      String(formatDateTimeDE(lead.follow_up_at)),
+    ]),
+  ]
+
+  drawSimpleTable(doc, 'Top Hot Leads', hotRows, [120, 95, 50, 65, 70, 95])
+
+  const dueRows = [
+    ['Name', 'Typ', 'Priorität', 'Status', 'Follow-up', 'Hinweis'],
+    ...dueLeads.slice(0, 12).map((lead) => [
+      String(lead.name || '-'),
+      String(lead.lead_type || '-'),
+      String(lead.priority || '-'),
+      String(lead.status || '-'),
+      String(formatDateTimeDE(lead.follow_up_at)),
+      isOverdue(lead.follow_up_at, lead.closed) ? 'überfällig' : 'heute',
+    ]),
+  ]
+
+  if (doc.y > 620) doc.addPage()
+  drawSimpleTable(doc, 'Fällige Leads', dueRows, [115, 55, 65, 70, 115, 75])
+
+  if (doc.y > 650) doc.addPage()
+  drawSectionTitle(doc, 'Automation Detail')
+  doc.font('Helvetica').fontSize(10).fillColor('#111827')
+  doc.text(`Letzter Versandtag: ${automationLog.last_sent_date || '-'}`)
+  doc.text(`Letzter Versandzeitpunkt: ${formatDateTimeDE(automationLog.last_sent_at)}`)
+  doc.text(`Letzte Versandanzahl: ${automationLog.last_sent_count ?? 0}`)
+  doc.text(`Letzter Status: ${automationLog.last_status || '-'}`)
+  doc.text(`Letzter Fehler/Hinweis: ${automationLog.last_error || '-'}`, {
+    width: 495,
+    lineGap: 3,
+  })
+
+  doc.moveDown(1.5)
+  doc.fillColor('#6b7280').fontSize(9).text(
+    'Dieser Report wurde automatisch aus dem aktuellen Postmeister-Dashboard generiert.',
+    50,
+    doc.y,
+    { width: 495, align: 'left' }
+  )
+
+  doc.end()
+
+  const buffer = await done
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
+  const filename = `postmeister_management_report__${stamp}.pdf`
+
+  return new Response(buffer, {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="${filename}"`,
+    },
+  })
+}

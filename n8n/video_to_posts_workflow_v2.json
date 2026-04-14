@@ -1,0 +1,154 @@
+{
+  "name": "VIDEO_TO_POSTS_V2_SAFE",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual_trigger",
+      "name": "Start",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "command": "cat /Users/tom/Projects/postmeister/data/video_to_posts/job_config.json"
+      },
+      "id": "read_config",
+      "name": "Read Config",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [420, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const raw = $json.stdout || $json.data || ''; return [{ json: JSON.parse(raw) }];"
+      },
+      "id": "parse_config",
+      "name": "Parse Config",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [620, 300]
+    },
+    {
+      "parameters": {
+        "command": "cat \"{{$json.transcript_path}}\""
+      },
+      "id": "read_transcript",
+      "name": "Read Transcript",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [840, 220]
+    },
+    {
+      "parameters": {
+        "command": "cat \"{{$json.master_prompt_path}}\""
+      },
+      "id": "read_prompt",
+      "name": "Read Prompt",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [840, 380]
+    },
+    {
+      "parameters": {
+        "functionCode": "const config = $items('Parse Config', 0, 0)[0].json;\nconst transcript = $items('Read Transcript', 0, 0)[0].json.stdout || '';\nconst prompt = $items('Read Prompt', 0, 0)[0].json.stdout || '';\nreturn [{ json: { ...config, transcript, prompt } }];"
+      },
+      "id": "merge_data",
+      "name": "Merge Data",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1060, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://127.0.0.1:11434/api/generate",
+        "method": "POST",
+        "jsonParameters": true,
+        "bodyParametersJson": "={\"model\":\"qwen2.5:14b\",\"stream\":false,\"prompt\":\"Analysiere den folgenden Videoinhalt für Social Media. Extrahiere Kernthemen, Hooks und Content-Winkel.\\n\\nTRANSCRIPT:\\n\" + $json.transcript}"
+      },
+      "id": "ollama_analysis",
+      "name": "Ollama Analyse",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1280, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const config = $items('Merge Data', 0, 0)[0].json;\nconst analysis = $json.response || JSON.stringify($json);\nreturn [{ json: { ...config, analysis_output: analysis } }];"
+      },
+      "id": "prepare_posts",
+      "name": "Prepare Posts Prompt",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1480, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://127.0.0.1:11434/api/generate",
+        "method": "POST",
+        "jsonParameters": true,
+        "bodyParametersJson": "={\"model\":\"qwen2.5:14b\",\"stream\":false,\"prompt\":\"\" + $json.prompt + \"\\n\\nANALYSE:\\n\" + $json.analysis_output + \"\\n\\nErstelle genau 20 Social-Media-Posts auf Deutsch.\"}"
+      },
+      "id": "generate_posts",
+      "name": "Generate Posts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1690, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const config = $items('Prepare Posts Prompt', 0, 0)[0].json;\nconst raw = $json.response || JSON.stringify($json, null, 2);\nconst ts = new Date().toISOString().replace(/[:.]/g, '-');\nconst out = `${config.output_dir}/posts_${ts}.txt`;\nreturn [{ json: { ...config, raw_output: raw, out_path: out } }];"
+      },
+      "id": "prepare_save",
+      "name": "Prepare Save",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1890, 300]
+    },
+    {
+      "parameters": {
+        "command": "cat <<'EON8N' > \"{{$json.out_path}}\"\n{{$json.raw_output}}\nEON8N"
+      },
+      "id": "save_output",
+      "name": "Save Output",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [2100, 300]
+    }
+  ],
+  "connections": {
+    "Start": {
+      "main": [[{ "node": "Read Config", "type": "main", "index": 0 }]]
+    },
+    "Read Config": {
+      "main": [[{ "node": "Parse Config", "type": "main", "index": 0 }]]
+    },
+    "Parse Config": {
+      "main": [
+        [{ "node": "Read Transcript", "type": "main", "index": 0 }],
+        [{ "node": "Read Prompt", "type": "main", "index": 0 }]
+      ]
+    },
+    "Read Transcript": {
+      "main": [[{ "node": "Merge Data", "type": "main", "index": 0 }]]
+    },
+    "Read Prompt": {
+      "main": [[{ "node": "Merge Data", "type": "main", "index": 1 }]]
+    },
+    "Merge Data": {
+      "main": [[{ "node": "Ollama Analyse", "type": "main", "index": 0 }]]
+    },
+    "Ollama Analyse": {
+      "main": [[{ "node": "Prepare Posts Prompt", "type": "main", "index": 0 }]]
+    },
+    "Prepare Posts Prompt": {
+      "main": [[{ "node": "Generate Posts", "type": "main", "index": 0 }]]
+    },
+    "Generate Posts": {
+      "main": [[{ "node": "Prepare Save", "type": "main", "index": 0 }]]
+    },
+    "Prepare Save": {
+      "main": [[{ "node": "Save Output", "type": "main", "index": 0 }]]
+    }
+  }
+}

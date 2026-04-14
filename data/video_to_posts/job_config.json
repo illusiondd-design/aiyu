@@ -1,0 +1,10 @@
+{
+  "video_path": "/Users/tom/Projects/postmeister/input/videos/test_video.mp4",
+  "project_name": "postmeister_video_to_posts_beta",
+  "brand_name": "Robs KFZ Service",
+  "platforms": ["instagram", "facebook", "linkedin"],
+  "posts_count": 20,
+  "transcript_path": "/Users/tom/Projects/postmeister/input/transcripts/test_video_transcript.txt",
+  "master_prompt_path": "/Users/tom/Projects/postmeister/prompts/video_to_posts_master_prompt.txt",
+  "output_dir": "/Users/tom/Projects/postmeister/output/video_to_posts"
+}

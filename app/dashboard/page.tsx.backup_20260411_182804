@@ -1,0 +1,34 @@
+import ContentPipelinePanel from '@/components/dashboard/ContentPipelinePanel'
+import PublishJobsPanel from '@/components/dashboard/PublishJobsPanel'
+
+export default function DashboardPage() {
+  return (
+    <main
+      style={{
+        minHeight: '100vh',
+        background: '#0d0d0d',
+        padding: 24,
+        color: '#fff',
+      }}
+    >
+      <div
+        style={{
+          maxWidth: 1600,
+          margin: '0 auto',
+          display: 'grid',
+          gap: 18,
+        }}
+      >
+        <div>
+          <h1 style={{ margin: 0, fontSize: 28 }}>PostMeister Dashboard</h1>
+          <p style={{ margin: '8px 0 0', color: '#9ca3af', fontSize: 14 }}>
+            Operatives Dashboard für Content-Pipeline und Publish-Monitoring.
+          </p>
+        </div>
+
+        <ContentPipelinePanel />
+        <PublishJobsPanel />
+      </div>
+    </main>
+  )
+}

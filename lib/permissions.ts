@@ -1,0 +1,70 @@
+import { PACKAGES, PackageKey, PackageFeature, PackageLimit } from './packages';
+
+export function hasFeature(
+  pkgKey: PackageKey,
+  feature: PackageFeature
+): boolean {
+  const pkg = PACKAGES[pkgKey];
+  if (!pkg) return false;
+  return Boolean(pkg.features[feature]);
+}
+
+export function getLimit(
+  pkgKey: PackageKey,
+  limitKey: PackageLimit
+): number {
+  const pkg = PACKAGES[pkgKey];
+  if (!pkg) return 0;
+  return pkg.limits[limitKey] ?? 0;
+}
+
+export function isLimitReached(
+  pkgKey: PackageKey,
+  limitKey: PackageLimit,
+  used: number
+): boolean {
+  const limit = getLimit(pkgKey, limitKey);
+  if (limit === -1) return false; // unlimited
+  return used >= limit;
+}
+
+export function getLimitStatus(
+  pkgKey: PackageKey,
+  limitKey: PackageLimit,
+  used: number
+): {
+  limit: number;
+  used: number;
+  remaining: number;
+  percentage: number;
+  isReached: boolean;
+  isUnlimited: boolean;
+} {
+  const limit = getLimit(pkgKey, limitKey);
+  const isUnlimited = limit === -1;
+  const isReached = !isUnlimited && used >= limit;
+  const remaining = isUnlimited ? -1 : Math.max(0, limit - used);
+  const percentage = isUnlimited ? 0 : Math.min(100, (used / limit) * 100);
+
+  return {
+    limit,
+    used,
+    remaining,
+    percentage,
+    isReached,
+    isUnlimited,
+  };
+}
+
+export function canUpgradeTo(
+  currentPackage: PackageKey,
+  targetPackage: PackageKey
+): boolean {
+  const pkg = PACKAGES[currentPackage];
+  if (!pkg) return false;
+  return (pkg.upgradeTo as readonly string[]).includes(targetPackage);
+}
+
+export function formatPrice(cents: number): string {
+  return `${(cents / 100).toFixed(2)}€`;
+}

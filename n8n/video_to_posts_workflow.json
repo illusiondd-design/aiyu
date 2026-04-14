@@ -1,0 +1,155 @@
+{
+  "name": "VIDEO_TO_POSTS_V1",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual_trigger",
+      "name": "Start",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "filePath": "/Users/tom/Projects/postmeister/data/video_to_posts/job_config.json"
+      },
+      "id": "read_config",
+      "name": "Read Config",
+      "type": "n8n-nodes-base.readBinaryFile",
+      "typeVersion": 1,
+      "position": [400, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const json = JSON.parse(Buffer.from(items[0].binary.data.data).toString()); return [{ json }];"
+      },
+      "id": "parse_config",
+      "name": "Parse Config",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [600, 300]
+    },
+    {
+      "parameters": {
+        "command": "/Users/tom/Projects/postmeister/scripts/video_probe.sh {{$json.video_path}}"
+      },
+      "id": "video_probe",
+      "name": "Video Probe",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [800, 200]
+    },
+    {
+      "parameters": {
+        "command": "/Users/tom/Projects/postmeister/scripts/read_transcript.sh {{$json.transcript_path}}"
+      },
+      "id": "read_transcript",
+      "name": "Read Transcript",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [800, 300]
+    },
+    {
+      "parameters": {
+        "command": "/Users/tom/Projects/postmeister/scripts/read_prompt.sh {{$json.master_prompt_path}}"
+      },
+      "id": "read_prompt",
+      "name": "Read Prompt",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [800, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "return [{ json: { transcript: $node[\"Read Transcript\"].json.data, prompt: $node[\"Read Prompt\"].json.data } }];"
+      },
+      "id": "merge_data",
+      "name": "Merge Data",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1000, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://127.0.0.1:11434/api/generate",
+        "method": "POST",
+        "jsonParameters": true,
+        "options": {},
+        "bodyParametersJson": "={ \"model\": \"qwen2.5:14b\", \"stream\": false, \"prompt\": \"Analysiere diesen Inhalt und extrahiere Themen, Hooks und Content-Winkel:\\n\\n\" + $json.transcript }"
+      },
+      "id": "ollama_analysis",
+      "name": "Ollama Analyse",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [1200, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://127.0.0.1:11434/api/generate",
+        "method": "POST",
+        "jsonParameters": true,
+        "options": {},
+        "bodyParametersJson": "={ \"model\": \"qwen2.5:14b\", \"stream\": false, \"prompt\": \"Erstelle 20 Social Media Posts als JSON:\\n\\n\" + $node[\"Ollama Analyse\"].json.response }"
+      },
+      "id": "ollama_posts",
+      "name": "Generate Posts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [1400, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const now = new Date().toISOString().replace(/[:.]/g, '-'); const raw = $json.response; return [{ json: { raw, file: `/Users/tom/Projects/postmeister/output/video_to_posts/posts_${now}.txt` } }];"
+      },
+      "id": "format_output",
+      "name": "Format Output",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1600, 300]
+    },
+    {
+      "parameters": {
+        "fileName": "={{$json.file}}",
+        "dataPropertyName": "raw"
+      },
+      "id": "write_file",
+      "name": "Save Output",
+      "type": "n8n-nodes-base.writeBinaryFile",
+      "typeVersion": 1,
+      "position": [1800, 300]
+    }
+  ],
+  "connections": {
+    "Start": {
+      "main": [[{ "node": "Read Config", "type": "main", "index": 0 }]]
+    },
+    "Read Config": {
+      "main": [[{ "node": "Parse Config", "type": "main", "index": 0 }]]
+    },
+    "Parse Config": {
+      "main": [
+        [{ "node": "Video Probe", "type": "main", "index": 0 }],
+        [{ "node": "Read Transcript", "type": "main", "index": 0 }],
+        [{ "node": "Read Prompt", "type": "main", "index": 0 }]
+      ]
+    },
+    "Read Transcript": {
+      "main": [[{ "node": "Merge Data", "type": "main", "index": 0 }]]
+    },
+    "Read Prompt": {
+      "main": [[{ "node": "Merge Data", "type": "main", "index": 1 }]]
+    },
+    "Merge Data": {
+      "main": [[{ "node": "Ollama Analyse", "type": "main", "index": 0 }]]
+    },
+    "Ollama Analyse": {
+      "main": [[{ "node": "Generate Posts", "type": "main", "index": 0 }]]
+    },
+    "Generate Posts": {
+      "main": [[{ "node": "Format Output", "type": "main", "index": 0 }]]
+    },
+    "Format Output": {
+      "main": [[{ "node": "Save Output", "type": "main", "index": 0 }]]
+    }
+  }
+}

@@ -1,0 +1,1760 @@
+'use client'
+
+import { useEffect, useMemo, useState } from 'react'
+
+type PostRow = {
+  id: number
+  platform: string | null
+  review_status?: string | null
+  video_status?: string | null
+  video_local_path?: string | null
+  music_status?: string | null
+  music_local_path?: string | null
+  final_status?: string | null
+  final_reel_path?: string | null
+  publish_status?: string | null
+  publish_target?: string | null
+  published_url?: string | null
+  created_at?: string | null
+}
+
+type PlatformFilter = 'all' | 'instagram' | 'facebook' | 'linkedin' | 'tiktok' | 'youtube'
+type BoardColumnKey = 'needs_video' | 'needs_music' | 'needs_final' | 'publish_ready' | 'published'
+type BulkAction = 'video' | 'music' | 'final' | 'ready' | 'published' | 'clear'
+type ToastItem = {
+  id: string
+  kind: 'success' | 'error' | 'info'
+  text: string
+}
+type ConfirmState = {
+  title: string
+  text: string
+  action: () => Promise<void>
+} | null
+
+type ActivityItem = {
+  id: number | string
+  post_id?: number | null
+  action: string
+  status: 'success' | 'error' | 'info' | string
+  message: string
+  platform?: string | null
+  meta?: Record<string, unknown> | null
+  created_at?: string | null
+}
+
+type PublishJobItem = {
+  id: number
+  post_id: number
+  platform?: string | null
+  status?: string | null
+  provider?: string | null
+  external_post_id?: string | null
+  published_url?: string | null
+  error_message?: string | null
+  payload?: Record<string, unknown> | null
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+const PLATFORM_ORDER: PlatformFilter[] = ['instagram', 'facebook', 'linkedin', 'tiktok', 'youtube']
+
+type ContentPipelinePanelProps = {
+  packageType?: 'go' | 'pro' | 'ultra'
+}
+
+export default function ContentPipelinePanel({ packageType = 'pro' }: ContentPipelinePanelProps) {
+  const [rows, setRows] = useState<PostRow[]>([])
+  const [loading, setLoading] = useState(true)
+  const [busyId, setBusyId] = useState<number | null>(null)
+  const [bulkBusy, setBulkBusy] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<number[]>([])
+  const [error, setError] = useState<string | null>(null)
+  const [platformFilter, setPlatformFilter] = useState<PlatformFilter>('all')
+  const [search, setSearch] = useState('')
+  const [draggedId, setDraggedId] = useState<number | null>(null)
+  const [activeDropZone, setActiveDropZone] = useState<BoardColumnKey | null>(null)
+  const [activity, setActivity] = useState<ActivityItem[]>([])
+  const [publishJobs, setPublishJobs] = useState<PublishJobItem[]>([])
+  const [toasts, setToasts] = useState<ToastItem[]>([])
+  const [confirmState, setConfirmState] = useState<ConfirmState>(null)
+  const [detailRow, setDetailRow] = useState<PostRow | null>(null)
+
+  const isUltra = packageType === 'ultra'
+  const isPro = packageType === 'pro' || packageType === 'ultra'
+
+  function ultraHint() {
+    return isUltra ? 'ULTRA aktiv' : 'Nur im ULTRA Paket verfügbar'
+  }
+
+  function gatedButtonStyle(disabled: boolean): React.CSSProperties {
+    return {
+      ...buttonStyle,
+      opacity: disabled ? 0.45 : 1,
+      cursor: disabled ? 'not-allowed' : 'pointer',
+      borderColor: disabled ? '#374151' : buttonStyle.borderColor,
+      color: disabled ? '#94a3b8' : buttonStyle.color,
+    }
+  }
+
+  function addToast(kind: ToastItem['kind'], text: string) {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    setToasts((prev) => [...prev, { id, kind, text }])
+    window.setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id))
+    }, 3000)
+  }
+
+  async function loadActivity(postId?: number) {
+    try {
+      const url = postId
+        ? `/api/activity/list?post_id=${postId}&limit=20`
+        : '/api/activity/list?limit=20'
+
+      const res = await fetch(url, {
+        cache: 'no-store',
+        headers: { 'x-aiyu-package': packageType },
+      })
+      const json = await res.json()
+
+      if (!res.ok || !json?.ok) {
+        throw new Error(json?.error || 'Activity-Log konnte nicht geladen werden.')
+      }
+
+      setActivity(Array.isArray(json.data) ? json.data : [])
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Activity-Log konnte nicht geladen werden.'
+      setError(msg)
+      addToast('error', msg)
+    }
+  }
+
+  async function loadPublishJobs(postId?: number) {
+    if (!postId) {
+      setPublishJobs([])
+      return
+    }
+
+    try {
+      const res = await fetch(`/api/publish/job/list?post_id=${postId}&limit=20`, {
+        cache: 'no-store',
+        headers: { 'x-aiyu-package': packageType },
+      })
+      const json = await res.json()
+
+      if (!res.ok || !json?.ok) {
+        throw new Error(json?.error || 'Publish-Jobs konnten nicht geladen werden.')
+      }
+
+      setPublishJobs(Array.isArray(json.data) ? json.data : [])
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Publish-Jobs konnten nicht geladen werden.'
+      setError(msg)
+      addToast('error', msg)
+      setPublishJobs([])
+    }
+  }
+
+  async function writeActivityLog(payload: {
+    post_id?: number | null
+    action: string
+    status?: 'success' | 'error' | 'info'
+    message: string
+    platform?: string | null
+    meta?: Record<string, unknown> | null
+  }) {
+    try {
+      await fetch('/api/activity/log', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-aiyu-package': packageType,
+        },
+        body: JSON.stringify(payload),
+      })
+    } catch {
+      // UI soll nicht blockieren, wenn Log fehlschlägt
+    }
+  }
+
+  async function loadPosts() {
+    try {
+      setLoading(true)
+      setError(null)
+
+      const res = await fetch('/api/dashboard/posts', {
+        cache: 'no-store',
+        headers: { 'x-aiyu-package': packageType },
+      })
+      const json = await res.json()
+
+      if (!res.ok || !json?.ok) {
+        throw new Error(json?.error || 'Dashboard-Daten konnten nicht geladen werden.')
+      }
+
+      const nextRows = Array.isArray(json.posts) ? json.posts : Array.isArray(json.data) ? json.data : []
+      setRows(nextRows)
+
+      if (detailRow) {
+        const refreshed = nextRows.find((r: any) => r.id === detailRow.id) || null
+        setDetailRow(refreshed)
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Unbekannter Fehler'
+      setError(msg)
+      addToast('error', msg)
+      await writeActivityLog({
+        action: 'load_posts',
+        status: 'error',
+        message: `Laden fehlgeschlagen: ${msg}`,
+        meta: { source: 'dashboard' },
+      })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    loadPosts()
+    loadActivity()
+  }, [])
+
+  useEffect(() => {
+    if (detailRow?.id) {
+      loadActivity(detailRow.id)
+      loadPublishJobs(detailRow.id)
+    } else {
+      loadActivity()
+      setPublishJobs([])
+    }
+  }, [detailRow?.id])
+
+  async function postJson(url: string, payload: Record<string, unknown>) {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-aiyu-package': packageType,
+      },
+      body: JSON.stringify(payload),
+    })
+
+    const json = await res.json().catch(() => null)
+
+    if (!res.ok || !json?.ok) {
+      throw new Error(json?.error || `Fehler bei ${url}`)
+    }
+
+    return json
+  }
+
+  async function generateVideo(id: number) {
+    const row = rows.find((r) => r.id === id)
+    try {
+      setBusyId(id)
+      setError(null)
+      await postJson('/api/video/generate', { id })
+      addToast('success', `Video gestartet: Post #${id}`)
+      await writeActivityLog({
+        post_id: id,
+        action: 'video_generate',
+        status: 'success',
+        message: `Video-Generierung gestartet für Post #${id}`,
+        platform: row?.platform || null,
+        meta: { source: 'dashboard' },
+      })
+      await loadPosts()
+      await loadActivity(detailRow?.id)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Video fehlgeschlagen'
+      setError(msg)
+      addToast('error', `Video fehlgeschlagen: Post #${id}`)
+      await writeActivityLog({
+        post_id: id,
+        action: 'video_generate',
+        status: 'error',
+        message: `Video fehlgeschlagen für Post #${id}: ${msg}`,
+        platform: row?.platform || null,
+        meta: { source: 'dashboard' },
+      })
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  async function generateMusic(id: number) {
+    const row = rows.find((r) => r.id === id)
+    try {
+      setBusyId(id)
+      setError(null)
+      await postJson('/api/music/prompt', { id })
+      addToast('success', `Musik angestoßen: Post #${id}`)
+      await writeActivityLog({
+        post_id: id,
+        action: 'music_generate',
+        status: 'success',
+        message: `Musik-Prompt erzeugt für Post #${id}`,
+        platform: row?.platform || null,
+        meta: { source: 'dashboard' },
+      })
+      await loadPosts()
+      await loadActivity(detailRow?.id)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Musik fehlgeschlagen'
+      setError(msg)
+      addToast('error', `Musik fehlgeschlagen: Post #${id}`)
+      await writeActivityLog({
+        post_id: id,
+        action: 'music_generate',
+        status: 'error',
+        message: `Musik fehlgeschlagen für Post #${id}: ${msg}`,
+        platform: row?.platform || null,
+        meta: { source: 'dashboard' },
+      })
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  async function composeFinal(id: number) {
+    const row = rows.find((r) => r.id === id)
+    try {
+      setBusyId(id)
+      setError(null)
+      await postJson('/api/video/compose', { id })
+      addToast('success', `Final erstellt: Post #${id}`)
+      await writeActivityLog({
+        post_id: id,
+        action: 'final_compose',
+        status: 'success',
+        message: `Final erstellt für Post #${id}`,
+        platform: row?.platform || null,
+        meta: { source: 'dashboard' },
+      })
+      await loadPosts()
+      await loadActivity(detailRow?.id)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Compose fehlgeschlagen'
+      setError(msg)
+      addToast('error', `Final fehlgeschlagen: Post #${id}`)
+      await writeActivityLog({
+        post_id: id,
+        action: 'final_compose',
+        status: 'error',
+        message: `Final fehlgeschlagen für Post #${id}: ${msg}`,
+        platform: row?.platform || null,
+        meta: { source: 'dashboard' },
+      })
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  async function markPublish(
+    id: number,
+    status: 'ready' | 'published' | 'failed',
+    publishTarget = 'instagram'
+  ) {
+    const row = rows.find((r) => r.id === id)
+    try {
+      setBusyId(id)
+      setError(null)
+
+      if (status === 'published') {
+        await postJson('/api/publish/job/launch', {
+          post_id: id,
+          platform: publishTarget,
+        })
+
+        addToast('success', `Publish-Job erzeugt: Post #${id}`)
+        await writeActivityLog({
+          post_id: id,
+          action: 'publish_job_launch',
+          status: 'success',
+          message: `Publish-Job erzeugt für Post #${id}`,
+          platform: row?.platform || null,
+          meta: { source: 'dashboard', publish_target: publishTarget },
+        })
+      } else {
+        const payload: Record<string, unknown> = {
+          id,
+          status,
+          publish_target: publishTarget,
+        }
+
+        if (status === 'failed') {
+          payload.publish_error = 'Manuell im Dashboard auf failed gesetzt'
+        }
+
+        await postJson('/api/publish/mark', payload)
+        addToast('success', `Status gesetzt: ${status} für #${id}`)
+        await writeActivityLog({
+          post_id: id,
+          action: 'publish_mark',
+          status: 'success',
+          message: `Publish-Status "${status}" gesetzt für Post #${id}`,
+          platform: row?.platform || null,
+          meta: { source: 'dashboard', publish_target: publishTarget },
+        })
+      }
+
+      await loadPosts()
+      await loadActivity(detailRow?.id)
+      if (detailRow?.id === id) {
+        await loadPublishJobs(id)
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Publish-Status konnte nicht gesetzt werden.'
+      setError(msg)
+      addToast('error', `Publish fehlgeschlagen: Post #${id}`)
+      await writeActivityLog({
+        post_id: id,
+        action: status === 'published' ? 'publish_job_launch' : 'publish_mark',
+        status: 'error',
+        message: `Publish fehlgeschlagen für Post #${id}: ${msg}`,
+        platform: row?.platform || null,
+        meta: { source: 'dashboard', publish_target: publishTarget },
+      })
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  function openConfirm(title: string, text: string, action: () => Promise<void>) {
+    setConfirmState({ title, text, action })
+  }
+
+  async function confirmNow() {
+    if (!confirmState) return
+    const action = confirmState.action
+    setConfirmState(null)
+    await action()
+  }
+
+  async function handleDropAction(target: BoardColumnKey, id: number) {
+    const row = rows.find((r) => r.id === id)
+    if (!row || busyId === id) return
+
+    if (target === 'needs_music') {
+      if (!row.video_local_path) await generateVideo(id)
+      return
+    }
+
+    if (target === 'needs_final') {
+      if (row.video_local_path && !row.music_local_path) await generateMusic(id)
+      return
+    }
+
+    if (target === 'publish_ready') {
+      if (row.video_local_path && row.music_local_path && !row.final_reel_path) await composeFinal(id)
+      return
+    }
+
+    if (target === 'published') {
+      if (row.final_reel_path) await markPublish(id, 'published', row.platform || 'instagram')
+    }
+  }
+
+  async function runBulkAction(action: BulkAction) {
+    if (action === 'clear') {
+      setSelectedIds([])
+      addToast('info', 'Auswahl gelöscht')
+      await writeActivityLog({
+        action: 'bulk_clear_selection',
+        status: 'info',
+        message: 'Auswahl gelöscht',
+        meta: { selected_count: 0, source: 'dashboard' },
+      })
+      return
+    }
+
+    if (selectedIds.length === 0) {
+      setError('Keine Posts ausgewählt')
+      addToast('error', 'Keine Posts ausgewählt')
+      await writeActivityLog({
+        action: `bulk_${action}`,
+        status: 'error',
+        message: 'Massenaktion abgebrochen: keine Posts ausgewählt',
+        meta: { source: 'dashboard' },
+      })
+      return
+    }
+
+    try {
+      setBulkBusy(true)
+      setError(null)
+
+      for (const id of selectedIds) {
+        const row = rows.find((r) => r.id === id)
+        if (!row) continue
+
+        if (action === 'video') {
+          if (!row.video_local_path) await postJson('/api/video/generate', { id })
+          continue
+        }
+
+        if (action === 'music') {
+          if (row.video_local_path && !row.music_local_path) await postJson('/api/music/prompt', { id })
+          continue
+        }
+
+        if (action === 'final') {
+          if (row.video_local_path && row.music_local_path && !row.final_reel_path) {
+            await postJson('/api/video/compose', { id })
+          }
+          continue
+        }
+
+        if (action === 'ready') {
+          if (row.final_reel_path) {
+            await postJson('/api/publish/mark', {
+              id,
+              status: 'ready',
+              publish_target: row.platform || 'instagram',
+            })
+          }
+          continue
+        }
+
+        if (action === 'published') {
+          if (row.final_reel_path) {
+            await postJson('/api/publish/job/launch', {
+              post_id: id,
+              platform: row.platform || 'instagram',
+            })
+          }
+        }
+      }
+
+      addToast('success', `Bulk ${action} abgeschlossen`)
+      await writeActivityLog({
+        action: `bulk_${action}`,
+        status: 'success',
+        message: `Massenaktion "${action}" abgeschlossen für ${selectedIds.length} Posts`,
+        meta: { ids: selectedIds, source: 'dashboard' },
+      })
+      await loadPosts()
+      await loadActivity(detailRow?.id)
+      setSelectedIds([])
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Massenaktion fehlgeschlagen'
+      setError(msg)
+      addToast('error', `Bulk ${action} fehlgeschlagen`)
+      await writeActivityLog({
+        action: `bulk_${action}`,
+        status: 'error',
+        message: `Massenaktion "${action}" fehlgeschlagen: ${msg}`,
+        meta: { ids: selectedIds, source: 'dashboard' },
+      })
+    } finally {
+      setBulkBusy(false)
+    }
+  }
+
+  function toggleSelect(id: number) {
+    setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
+  }
+
+  function toggleSelectVisible(visibleIds: number[]) {
+    const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.includes(id))
+
+    if (allVisibleSelected) {
+      setSelectedIds((prev) => prev.filter((id) => !visibleIds.includes(id)))
+      addToast('info', 'Sichtbare Auswahl aufgehoben')
+      return
+    }
+
+    setSelectedIds((prev) => Array.from(new Set([...prev, ...visibleIds])))
+    addToast('info', `${visibleIds.length} sichtbare Posts ausgewählt`)
+  }
+
+  const filteredRows = useMemo(() => {
+    let result = rows
+
+    if (platformFilter !== 'all') {
+      result = result.filter((row) => (row.platform || '').toLowerCase() === platformFilter)
+    }
+
+    const q = search.trim().toLowerCase()
+    if (q) {
+      result = result.filter((row) => {
+        const haystack = [
+          String(row.id),
+          row.platform || '',
+          row.review_status || '',
+          row.video_status || '',
+          row.music_status || '',
+          row.final_status || '',
+          row.publish_status || '',
+          row.publish_target || '',
+          row.final_reel_path || '',
+          row.published_url || '',
+        ]
+          .join(' ')
+          .toLowerCase()
+
+        return haystack.includes(q)
+      })
+    }
+
+    return result
+  }, [rows, platformFilter, search])
+
+  const needsVideo = useMemo(
+  () => filteredRows.filter((r) => getPipelineStage(r) === 'needs_video'),
+  [filteredRows]
+)
+  const needsMusic = useMemo(
+  () => filteredRows.filter((r) => getPipelineStage(r) === 'needs_music'),
+  [filteredRows]
+)
+  const needsFinal = useMemo(
+  () => filteredRows.filter((r) => getPipelineStage(r) === 'needs_final'),
+  [filteredRows]
+)
+  const publishReady = useMemo(
+    () => filteredRows.filter((r) => {
+      const status = (r.publish_status || '').toLowerCase()
+      return !!r.final_reel_path && status !== 'published'
+    }),
+    [filteredRows]
+  )
+  const published = useMemo(() => filteredRows.filter((r) => r.publish_status === 'published'), [filteredRows])
+
+  const stats = useMemo(
+    () => ({
+      total: filteredRows.length,
+      videoStored: filteredRows.filter((r) => !!r.video_local_path).length,
+      musicStored: filteredRows.filter((r) => !!r.music_local_path).length,
+      finalReady: filteredRows.filter((r) => !!r.final_reel_path).length,
+      publishReady: publishReady.length,
+      published: published.length,
+    }),
+    [filteredRows, publishReady.length, published.length]
+  )
+
+  const platformStats = useMemo(() => {
+    return PLATFORM_ORDER.map((platform) => {
+      const items = rows.filter((r) => (r.platform || '').toLowerCase() === platform)
+      const total = items.length
+      const video = items.filter((r) => !!r.video_local_path).length
+      const music = items.filter((r) => !!r.music_local_path).length
+      const final = items.filter((r) => !!r.final_reel_path).length
+      const ready = items.filter((r) => {
+        const status = (r.publish_status || '').toLowerCase()
+        return !!r.final_reel_path && status !== 'published'
+      }).length
+      const publishedCount = items.filter((r) => r.publish_status === 'published').length
+      const progress = total > 0 ? Math.round((publishedCount / total) * 100) : 0
+
+      return {
+        platform,
+        total,
+        video,
+        music,
+        final,
+        ready,
+        published: publishedCount,
+        progress,
+      }
+    }).filter((p) => p.total > 0)
+  }, [rows])
+
+  function onDragStart(id: number) {
+    setDraggedId(id)
+  }
+
+  function onDragEnd() {
+    setDraggedId(null)
+    setActiveDropZone(null)
+  }
+
+  async function onDrop(target: BoardColumnKey) {
+
+    // optional: später Ultra-only Drops hier einschränken
+
+    if (!draggedId) {
+      setActiveDropZone(null)
+      return
+    }
+
+    try {
+      await handleDropAction(target, draggedId)
+      addToast('info', `Post #${draggedId} → ${target}`)
+      await writeActivityLog({
+        post_id: draggedId,
+        action: 'drag_drop_transition',
+        status: 'info',
+        message: `Drag & Drop verarbeitet für Post #${draggedId} → ${target}`,
+        meta: { target, source: 'dashboard' },
+      })
+      await loadActivity(detailRow?.id)
+    } finally {
+      setDraggedId(null)
+      setActiveDropZone(null)
+    }
+  }
+
+  const visibleIds = filteredRows.map((r) => r.id)
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.includes(id))
+
+  return (
+    <div
+      style={{
+        background: '#151515',
+        border: '1px solid #2a2a2a',
+        borderRadius: 16,
+        padding: 18,
+        color: '#fff',
+        position: 'relative',
+      }}
+    >
+      <div
+        style={{
+          marginBottom: 12,
+          padding: 10,
+          border: '1px solid #243244',
+          borderRadius: 10,
+          background: '#0c1522',
+          color: '#dbeafe',
+          fontSize: 12,
+        }}
+      >
+        Paketmodus: <strong>{packageType.toUpperCase()}</strong>{' '}
+        {isUltra ? '· Bulk- und Advanced-Steuerung aktiv' : '· Standard-Steuerung aktiv'}
+        {!isUltra && (
+          <div style={{ marginTop: 6, color: '#93c5fd' }}>
+            Hinweis: Sammelaktionen und erweiterte Steuerung sind erst im ULTRA Paket freigeschaltet.
+          </div>
+        )}
+      </div>
+
+      <div style={toastWrapStyle}>
+        {toasts.map((toast) => (
+          <div key={toast.id} style={toastStyle(toast.kind)}>
+            {toast.text}
+          </div>
+        ))}
+      </div>
+
+      {confirmState && (
+        <div style={overlayStyle}>
+          <div style={confirmBoxStyle}>
+            <h3 style={{ marginTop: 0 }}>{confirmState.title}</h3>
+            <p style={{ color: '#d1d5db', fontSize: 14 }}>{confirmState.text}</p>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button onClick={() => setConfirmState(null)} style={buttonStyle}>Abbrechen</button>
+              <button onClick={confirmNow} style={primaryButtonStyle}>Bestätigen</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div style={{ marginBottom: 16 }}>
+        <h3 style={{ margin: '0 0 10px 0', fontSize: 15 }}>Plattform-Fortschritt</h3>
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+            gap: 10,
+          }}
+        >
+          {platformStats.map((p) => (
+            <div key={p.platform} style={platformCardStyle}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+                <span style={platformBadgeStyle(p.platform)}>{platformLabel(p.platform)}</span>
+                <span style={{ fontSize: 12, color: '#d1d5db' }}>{p.progress}% published</span>
+              </div>
+
+              <div style={progressTrackStyle}>
+                <div style={{ ...progressFillStyle, width: `${p.progress}%` }} />
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6, marginTop: 10, fontSize: 12 }}>
+                <MiniStat label="Posts" value={p.total} />
+                <MiniStat label="Video" value={p.video} />
+                <MiniStat label="Musik" value={p.music} />
+                <MiniStat label="Final" value={p.final} />
+                <MiniStat label="Ready" value={p.ready} />
+                <MiniStat label="Published" value={p.published} />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: detailRow ? '1fr 360px' : '1fr',
+          gap: 16,
+        }}
+      >
+        <div>
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: 12,
+              flexWrap: 'wrap',
+              marginBottom: 16,
+            }}
+          >
+            <div>
+              <h2 style={{ margin: 0, fontSize: 20 }}>Content Pipeline Board</h2>
+              <p style={{ margin: '6px 0 0', color: '#9ca3af', fontSize: 13 }}>
+                Drag & Drop startet den nächsten Verarbeitungsschritt
+              </p>
+            </div>
+
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Suche nach ID, Plattform, Status ..."
+                style={inputStyle}
+              />
+
+              <select
+                value={platformFilter}
+                onChange={(e) => setPlatformFilter(e.target.value as PlatformFilter)}
+                style={selectStyle}
+              >
+                <option value="all">Alle Plattformen</option>
+                <option value="instagram">Instagram</option>
+                <option value="facebook">Facebook</option>
+                <option value="linkedin">LinkedIn</option>
+                <option value="tiktok">TikTok</option>
+                <option value="youtube">YouTube</option>
+              </select>
+
+              <button onClick={loadPosts} style={buttonStyle}>
+                Neu laden
+              </button>
+            </div>
+          </div>
+
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+              gap: 10,
+              marginBottom: 18,
+            }}
+          >
+            <StatCard label="Posts" value={stats.total} />
+            <StatCard label="Video lokal" value={stats.videoStored} />
+            <StatCard label="Musik lokal" value={stats.musicStored} />
+            <StatCard label="Final vorhanden" value={stats.finalReady} />
+            <StatCard label="Publish Ready" value={stats.publishReady} />
+            <StatCard label="Published" value={stats.published} />
+          </div>
+
+          <div
+            style={{
+              marginBottom: 14,
+              padding: 12,
+              border: '1px solid #2a2a2a',
+              borderRadius: 12,
+              background: '#101010',
+              display: 'flex',
+              gap: 10,
+              flexWrap: 'wrap',
+              alignItems: 'center',
+            }}
+          >
+            <button
+              onClick={() => {
+                if (!isUltra) {
+                  addToast('error', ultraHint())
+                  return
+                }
+                toggleSelectVisible(visibleIds)
+              }}
+              style={gatedButtonStyle(!isUltra)}
+            >
+              {allVisibleSelected ? 'Auswahl sichtbar aufheben' : 'Alle sichtbaren auswählen'}
+            </button>
+
+            <button
+              disabled={bulkBusy}
+              onClick={() => {
+                if (!isUltra) {
+                  addToast('error', ultraHint())
+                  return
+                }
+                openConfirm(
+                  'Bulk Video',
+                  `Bulk Video für ${selectedIds.length} Posts starten?`,
+                  async () => runBulkAction('video')
+                )
+              }}
+              style={gatedButtonStyle(!isUltra)}
+            >
+              {bulkBusy ? '...' : 'Bulk Video'}
+            </button>
+
+            <button
+              disabled={bulkBusy}
+              onClick={() => {
+                if (!isUltra) {
+                  addToast('error', ultraHint())
+                  return
+                }
+                openConfirm(
+                  'Bulk Musik',
+                  `Bulk Musik für ${selectedIds.length} Posts starten?`,
+                  async () => runBulkAction('music')
+                )
+              }}
+              style={gatedButtonStyle(!isUltra)}
+            >
+              {bulkBusy ? '...' : 'Bulk Musik'}
+            </button>
+
+            <button
+              disabled={bulkBusy}
+              onClick={() => {
+                if (!isUltra) {
+                  addToast('error', ultraHint())
+                  return
+                }
+                openConfirm(
+                  'Bulk Final',
+                  `Bulk Final für ${selectedIds.length} Posts bauen?`,
+                  async () => runBulkAction('final')
+                )
+              }}
+              style={gatedButtonStyle(!isUltra)}
+            >
+              {bulkBusy ? '...' : 'Bulk Final'}
+            </button>
+
+            <button
+              disabled={bulkBusy}
+              onClick={() => {
+                if (!isUltra) {
+                  addToast('error', ultraHint())
+                  return
+                }
+                openConfirm(
+                  'Bulk Ready',
+                  `Bulk Ready für ${selectedIds.length} Posts setzen?`,
+                  async () => runBulkAction('ready')
+                )
+              }}
+              style={gatedButtonStyle(!isUltra)}
+            >
+              {bulkBusy ? '...' : 'Bulk Ready'}
+            </button>
+
+            <button
+              disabled={bulkBusy}
+              onClick={() => {
+                if (!isUltra) {
+                  addToast('error', ultraHint())
+                  return
+                }
+                openConfirm(
+                  'Bulk Publish',
+                  `Bulk Publish für ${selectedIds.length} Posts setzen?`,
+                  async () => runBulkAction('published')
+                )
+              }}
+              style={gatedButtonStyle(!isUltra)}
+            >
+              {bulkBusy ? '...' : 'Bulk Publish'}
+            </button>
+
+            <button
+              disabled={bulkBusy}
+              onClick={() => {
+                if (!isUltra) {
+                  addToast('error', ultraHint())
+                  return
+                }
+                runBulkAction('clear')
+              }}
+              style={gatedButtonStyle(!isUltra)}
+            >
+              Auswahl löschen
+            </button>
+
+            <span style={{ fontSize: 12, color: '#9ca3af' }}>
+              Ausgewählt: {selectedIds.length}
+            </span>
+          </div>
+
+          <div
+            style={{
+              marginBottom: 14,
+              padding: 10,
+              border: '1px solid #2a2a2a',
+              borderRadius: 12,
+              background: '#101010',
+              fontSize: 12,
+              color: '#d1d5db',
+            }}
+          >
+            <strong>Drag & Drop Logik:</strong> Nach <em>Braucht Musik</em> ziehen = Video starten, nach <em>Braucht Final</em> = Musik starten, nach <em>Publish Ready</em> = Final bauen, nach <em>Published</em> = Publish-Job anlegen.
+          </div>
+
+          <div
+            style={{
+              marginBottom: 16,
+              border: '1px solid #2a2a2a',
+              borderRadius: 12,
+              background: '#101010',
+              padding: 12,
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
+              <strong style={{ fontSize: 14 }}>
+                Activity Log {detailRow ? `für Post #${detailRow.id}` : '(global)'}
+              </strong>
+              <button
+                onClick={() => loadActivity(detailRow?.id)}
+                style={{ ...buttonStyle, padding: '6px 10px', fontSize: 12 }}
+              >
+                Log neu laden
+              </button>
+            </div>
+
+            {activity.length === 0 ? (
+              <div style={{ fontSize: 12, color: '#9ca3af' }}>Noch keine Aktionen protokolliert.</div>
+            ) : (
+              <div style={{ display: 'grid', gap: 8, maxHeight: 220, overflowY: 'auto' }}>
+                {activity.map((item) => (
+                  <div
+                    key={String(item.id)}
+                    style={{
+                      border: '1px solid #2a2a2a',
+                      borderRadius: 10,
+                      padding: 10,
+                      background:
+                        item.status === 'success'
+                          ? 'rgba(22,163,74,0.08)'
+                          : item.status === 'error'
+                          ? 'rgba(239,68,68,0.08)'
+                          : 'rgba(107,114,128,0.08)',
+                    }}
+                  >
+                    <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 4 }}>
+                      {item.created_at ? new Date(item.created_at).toLocaleString('de-DE') : '-'}
+                    </div>
+                    <div style={{ fontSize: 13, color: '#fff' }}>{item.message}</div>
+                    <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>
+                      Action: {item.action} {item.post_id ? `• Post #${item.post_id}` : ''}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {loading && <p style={{ color: '#d1d5db' }}>Lade Pipeline-Board ...</p>}
+          {error && <p style={{ color: '#fca5a5' }}>{error}</p>}
+
+          {!loading && !error && (
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(5, minmax(240px, 1fr))',
+                gap: 12,
+                overflowX: 'auto',
+              }}
+            >
+              <BoardColumn title="Braucht Video" count={needsVideo.length} columnKey="needs_video" activeDropZone={activeDropZone} setActiveDropZone={setActiveDropZone} onDrop={onDrop}>
+                {needsVideo.map((row, index) => (
+                  <PostCard
+                    key={`video-${row.id}-${index}`}
+                    row={row}
+                    busy={busyId === row.id}
+                    selected={selectedIds.includes(row.id)}
+                    onSelect={() => toggleSelect(row.id)}
+                    onOpen={() => setDetailRow(row)}
+                    onVideo={() => openConfirm('Video starten', `Video für Post #${row.id} starten?`, async () => generateVideo(row.id))}
+                    draggable
+                    onDragStart={() => onDragStart(row.id)}
+                    onDragEnd={onDragEnd}
+                  />
+                ))}
+              </BoardColumn>
+
+              <BoardColumn title="Braucht Musik" count={needsMusic.length} columnKey="needs_music" activeDropZone={activeDropZone} setActiveDropZone={setActiveDropZone} onDrop={onDrop}>
+                {needsMusic.map((row, index) => (
+                  <PostCard
+                    key={`music-${row.id}-${index}`}
+                    row={row}
+                    busy={busyId === row.id}
+                    selected={selectedIds.includes(row.id)}
+                    onSelect={() => toggleSelect(row.id)}
+                    onOpen={() => setDetailRow(row)}
+                    onMusic={() => openConfirm('Musik erzeugen', `Musik für Post #${row.id} erzeugen?`, async () => generateMusic(row.id))}
+                    draggable
+                    onDragStart={() => onDragStart(row.id)}
+                    onDragEnd={onDragEnd}
+                  />
+                ))}
+              </BoardColumn>
+
+              <BoardColumn title="Braucht Final" count={needsFinal.length} columnKey="needs_final" activeDropZone={activeDropZone} setActiveDropZone={setActiveDropZone} onDrop={onDrop}>
+                {needsFinal.map((row, index) => (
+                  <PostCard
+                    key={`final-${row.id}-${index}`}
+                    row={row}
+                    busy={busyId === row.id}
+                    selected={selectedIds.includes(row.id)}
+                    onSelect={() => toggleSelect(row.id)}
+                    onOpen={() => setDetailRow(row)}
+                    onFinal={() => openConfirm('Final bauen', `Final für Post #${row.id} bauen?`, async () => composeFinal(row.id))}
+                    draggable
+                    onDragStart={() => onDragStart(row.id)}
+                    onDragEnd={onDragEnd}
+                  />
+                ))}
+              </BoardColumn>
+
+              <BoardColumn title="Publish Ready" count={publishReady.length} columnKey="publish_ready" activeDropZone={activeDropZone} setActiveDropZone={setActiveDropZone} onDrop={onDrop}>
+                {publishReady.map((row, index) => (
+                  <PostCard
+                    key={`ready-${row.id}-${index}`}
+                    row={row}
+                    busy={busyId === row.id}
+                    selected={selectedIds.includes(row.id)}
+                    onSelect={() => toggleSelect(row.id)}
+                    onOpen={() => setDetailRow(row)}
+                    onPublished={() => openConfirm('Publish starten', `Publish-Job für Post #${row.id} anlegen?`, async () => markPublish(row.id, 'published', row.platform || 'instagram'))}
+                    onFailed={() => openConfirm('Failed setzen', `Post #${row.id} auf "failed" setzen?`, async () => markPublish(row.id, 'failed', row.platform || 'instagram'))}
+                    showFinalPath
+                    draggable
+                    onDragStart={() => onDragStart(row.id)}
+                    onDragEnd={onDragEnd}
+                  />
+                ))}
+              </BoardColumn>
+
+              <BoardColumn title="Published" count={published.length} columnKey="published" activeDropZone={activeDropZone} setActiveDropZone={setActiveDropZone} onDrop={onDrop}>
+                {published.map((row, index) => (
+                  <PostCard
+                    key={`published-${row.id}-${index}`}
+                    row={row}
+                    busy={false}
+                    selected={selectedIds.includes(row.id)}
+                    onSelect={() => toggleSelect(row.id)}
+                    onOpen={() => setDetailRow(row)}
+                    showFinalPath
+                    showPublishedUrl
+                    draggable
+                    onDragStart={() => onDragStart(row.id)}
+                    onDragEnd={onDragEnd}
+                  />
+                ))}
+              </BoardColumn>
+            </div>
+          )}
+        </div>
+
+        {detailRow && (
+          <div style={detailPanelStyle}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+              <h3 style={{ margin: 0 }}>Post #{detailRow.id}</h3>
+              <button onClick={() => setDetailRow(null)} style={buttonStyle}>
+                Schließen
+              </button>
+            </div>
+
+            <div style={{ marginTop: 12, display: 'grid', gap: 10 }}>
+              <DetailLine label="Plattform" value={platformLabel(detailRow.platform)} />
+              <DetailLine label="Review" value={detailRow.review_status} />
+              <DetailLine label="Video" value={detailRow.video_local_path ? 'upload vorhanden' : detailRow.video_status} />
+              <DetailLine label="Musik" value={detailRow.music_local_path ? 'stored' : detailRow.music_status} />
+              <DetailLine label="Final" value={detailRow.final_reel_path ? 'ready' : detailRow.final_status} />
+              <DetailLine label="Publish" value={detailRow.publish_status} />
+              <DetailLine label="Target" value={detailRow.publish_target} />
+              <DetailLine label="Erstellt" value={detailRow.created_at} />
+
+              <DetailBlock label="Video-Datei" value={detailRow.video_local_path} />
+              <DetailBlock label="Musik-Datei" value={detailRow.music_local_path} />
+              <DetailBlock label="Final-Datei" value={detailRow.final_reel_path} />
+              <DetailBlock label="Published URL" value={detailRow.published_url} />
+
+              <div
+                style={{
+                  border: '1px solid #2a2a2a',
+                  borderRadius: 12,
+                  background: '#101010',
+                  padding: 12,
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', marginBottom: 10 }}>
+                  <strong style={{ fontSize: 14 }}>Publish-Jobs</strong>
+                  <button
+                    onClick={() => loadPublishJobs(detailRow.id)}
+                    style={{ ...buttonStyle, padding: '6px 10px', fontSize: 12 }}
+                  >
+                    Jobs neu laden
+                  </button>
+                </div>
+
+                {publishJobs.length === 0 ? (
+                  <div style={{ fontSize: 12, color: '#9ca3af' }}>Keine Publish-Jobs vorhanden.</div>
+                ) : (
+                  <div style={{ display: 'grid', gap: 8, maxHeight: 260, overflowY: 'auto' }}>
+                    {publishJobs.map((job) => (
+                      <div
+                        key={job.id}
+                        style={{
+                          border: '1px solid #2a2a2a',
+                          borderRadius: 10,
+                          padding: 10,
+                          background:
+                            (job.status || '').toLowerCase() === 'published'
+                              ? 'rgba(22,163,74,0.08)'
+                              : (job.status || '').toLowerCase() === 'failed'
+                              ? 'rgba(239,68,68,0.08)'
+                              : 'rgba(107,114,128,0.08)',
+                        }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', marginBottom: 6 }}>
+                          <strong style={{ fontSize: 13 }}>Job #{job.id}</strong>
+                          <span style={statusPillStyle(job.status)}>{job.status || '-'}</span>
+                        </div>
+                        <div style={{ display: 'grid', gap: 4, fontSize: 12, color: '#d1d5db' }}>
+                          <div>Plattform: {platformLabel(job.platform)}</div>
+                          <div>Provider: {job.provider || '-'}</div>
+                          <div>Erstellt: {job.created_at ? new Date(job.created_at).toLocaleString('de-DE') : '-'}</div>
+                          <div>Updated: {job.updated_at ? new Date(job.updated_at).toLocaleString('de-DE') : '-'}</div>
+                          <div>External ID: {job.external_post_id || '-'}</div>
+                          <div style={{ wordBreak: 'break-all' }}>URL: {job.published_url || '-'}</div>
+                          {job.error_message ? (
+                            <div style={{ color: '#fca5a5', wordBreak: 'break-word' }}>Fehler: {job.error_message}</div>
+                          ) : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function BoardColumn({
+  title,
+  count,
+  columnKey,
+  activeDropZone,
+  setActiveDropZone,
+  onDrop,
+  children,
+}: {
+  title: string
+  count: number
+  columnKey: BoardColumnKey
+  activeDropZone: BoardColumnKey | null
+  setActiveDropZone: (key: BoardColumnKey | null) => void
+  onDrop: (key: BoardColumnKey) => void
+  children: React.ReactNode
+}) {
+  const isActive = activeDropZone === columnKey
+
+  return (
+    <div
+      onDragOver={(e) => {
+        e.preventDefault()
+        setActiveDropZone(columnKey)
+      }}
+      onDragLeave={() => setActiveDropZone(null)}
+      onDrop={(e) => {
+        e.preventDefault()
+        onDrop(columnKey)
+      }}
+      style={{
+        background: isActive ? '#141f16' : '#101010',
+        border: isActive ? '1px solid #2f7d42' : '1px solid #242424',
+        borderRadius: 14,
+        padding: 12,
+        minWidth: 240,
+        transition: 'all 0.15s ease',
+      }}
+    >
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+        <h3 style={{ margin: 0, fontSize: 15, color: '#fff' }}>{title}</h3>
+        <span style={countBadgeStyle}>{count}</span>
+      </div>
+
+      <div style={{ display: 'grid', gap: 10 }}>
+        {count > 0 ? children : <EmptyState />}
+      </div>
+    </div>
+  )
+}
+
+function PostCard({
+  row,
+  busy,
+  selected,
+  onSelect,
+  onOpen,
+  onVideo,
+  onMusic,
+  onFinal,
+  onPublished,
+  onFailed,
+  showFinalPath,
+  showPublishedUrl,
+  draggable,
+  onDragStart,
+  onDragEnd,
+}: {
+  row: PostRow
+  busy: boolean
+  selected?: boolean
+  onSelect?: () => void
+  onOpen?: () => void
+  onVideo?: () => void
+  onMusic?: () => void
+  onFinal?: () => void
+  onPublished?: () => void
+  onFailed?: () => void
+  showFinalPath?: boolean
+  showPublishedUrl?: boolean
+  draggable?: boolean
+  onDragStart?: () => void
+  onDragEnd?: () => void
+}) {
+  return (
+    <div
+      draggable={draggable}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
+      style={{
+        background: selected ? '#1b2220' : '#171717',
+        border: selected ? '1px solid #2f7d42' : '1px solid #2d2d2d',
+        borderRadius: 12,
+        padding: 12,
+        cursor: draggable ? 'grab' : 'default',
+      }}
+    >
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input type="checkbox" checked={!!selected} onChange={onSelect} />
+          <strong style={{ fontSize: 14 }}>Post #{row.id}</strong>
+        </div>
+        <span style={platformBadgeStyle(row.platform)}>{platformLabel(row.platform)}</span>
+      </div>
+
+      <div style={{ display: 'grid', gap: 6, marginBottom: 10 }}>
+        <InfoLine label="Review" value={row.review_status} />
+        <InfoLine label="Video" value={row.video_local_path ? 'upload vorhanden' : row.video_status} />
+        <InfoLine label="Musik" value={row.music_local_path ? 'stored' : row.music_status} />
+        <InfoLine label="Final" value={row.final_reel_path ? 'ready' : row.final_status} />
+        <InfoLine label="Publish" value={row.publish_status} />
+      </div>
+
+      {showFinalPath && (
+        <div style={metaBoxStyle}>
+          <div style={metaLabelStyle}>Final-Datei</div>
+          <div style={metaValueStyle}>{row.final_reel_path || '-'}</div>
+        </div>
+      )}
+
+      {showPublishedUrl && (
+        <div style={{ ...metaBoxStyle, marginTop: 8 }}>
+          <div style={metaLabelStyle}>Published URL</div>
+          <div style={metaValueStyle}>{row.published_url || '-'}</div>
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+        <SmallButton onClick={onOpen || (() => {})}>Details</SmallButton>
+        {onVideo && <SmallButton disabled={busy} onClick={onVideo}>{busy ? '...' : 'Video'}</SmallButton>}
+        {onMusic && <SmallButton disabled={busy} onClick={onMusic}>{busy ? '...' : 'Musik'}</SmallButton>}
+        {onFinal && <SmallButton disabled={busy} onClick={onFinal}>{busy ? '...' : 'Final'}</SmallButton>}
+        {onPublished && <SmallButton disabled={busy} onClick={onPublished}>{busy ? '...' : 'Publish'}</SmallButton>}
+        {onFailed && <SmallButton disabled={busy} onClick={onFailed}>{busy ? '...' : 'Failed'}</SmallButton>}
+      </div>
+    </div>
+  )
+}
+
+function EmptyState() {
+  return (
+    <div
+      style={{
+        border: '1px dashed #303030',
+        borderRadius: 12,
+        padding: 14,
+        color: '#9ca3af',
+        fontSize: 13,
+      }}
+    >
+      Keine Einträge.
+    </div>
+  )
+}
+
+function InfoLine({
+  label,
+  value,
+}: {
+  label: string
+  value?: string | null
+}) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+      <span style={{ color: '#9ca3af', fontSize: 12 }}>{label}</span>
+      <span style={statusPillStyle(value)}>{value || '-'}</span>
+    </div>
+  )
+}
+
+function DetailLine({ label, value }: { label: string; value?: string | null }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 13 }}>
+      <span style={{ color: '#9ca3af' }}>{label}</span>
+      <span style={{ color: '#fff', textAlign: 'right' }}>{value || '-'}</span>
+    </div>
+  )
+}
+
+function DetailBlock({ label, value }: { label: string; value?: string | null }) {
+  return (
+    <div style={metaBoxStyle}>
+      <div style={metaLabelStyle}>{label}</div>
+      <div style={metaValueStyle}>{value || '-'}</div>
+    </div>
+  )
+}
+
+function SmallButton({
+  children,
+  onClick,
+  disabled,
+}: {
+  children: React.ReactNode
+  onClick: () => void
+  disabled?: boolean
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        padding: '7px 10px',
+        borderRadius: 8,
+        border: '1px solid #3a3a3a',
+        background: disabled ? '#222' : '#0f0f0f',
+        color: '#fff',
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        fontSize: 12,
+      }}
+    >
+      {children}
+    </button>
+  )
+}
+
+function StatCard({ label, value }: { label: string; value: number }) {
+  return (
+    <div
+      style={{
+        border: '1px solid #262626',
+        borderRadius: 12,
+        padding: 12,
+        background: '#0f0f0f',
+      }}
+    >
+      <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 6 }}>{label}</div>
+      <div style={{ fontSize: 24, fontWeight: 700, color: '#fff' }}>{value}</div>
+    </div>
+  )
+}
+
+function MiniStat({ label, value }: { label: string; value: number }) {
+  return (
+    <div
+      style={{
+        border: '1px solid #262626',
+        borderRadius: 8,
+        padding: 8,
+        background: '#0f0f0f',
+      }}
+    >
+      <div style={{ fontSize: 10, color: '#9ca3af', marginBottom: 3 }}>{label}</div>
+      <div style={{ fontSize: 14, fontWeight: 700, color: '#fff' }}>{value}</div>
+    </div>
+  )
+}
+
+type PipelineAssetRow = {
+  video_local_path?: string | null
+  music_local_path?: string | null
+  final_reel_path?: string | null
+}
+
+function hasSourceVideo(row: PipelineAssetRow) {
+  return !!row.video_local_path
+}
+
+function hasMusicAsset(row: PipelineAssetRow) {
+  return !!row.music_local_path
+}
+
+function hasFinalAsset(row: PipelineAssetRow) {
+  return !!row.final_reel_path
+}
+
+function getPipelineStage(row: PipelineAssetRow) {
+  const hasVideo = hasSourceVideo(row)
+  const hasMusic = hasMusicAsset(row)
+  const hasFinal = hasFinalAsset(row)
+
+  if (hasFinal) return 'final_ready'
+  if (hasVideo && hasMusic) return 'needs_final'
+  if (hasVideo && !hasMusic) return 'needs_music'
+  return 'needs_video'
+}
+
+function statusPillStyle(value?: string | null): React.CSSProperties {
+  const v = (value || '').toLowerCase()
+
+  let background = '#202020'
+  let color = '#e5e7eb'
+  let border = '#333'
+
+  if (['approved', 'completed', 'stored', 'ready', 'published', 'success'].includes(v)) {
+    background = 'rgba(22,163,74,0.14)'
+    color = '#86efac'
+    border = 'rgba(22,163,74,0.35)'
+  } else if (['pending', 'none', 'draft'].includes(v)) {
+    background = 'rgba(107,114,128,0.18)'
+    color = '#d1d5db'
+    border = 'rgba(107,114,128,0.35)'
+  } else if (['failed', 'error'].includes(v)) {
+    background = 'rgba(239,68,68,0.14)'
+    color = '#fca5a5'
+    border = 'rgba(239,68,68,0.35)'
+  }
+
+  return {
+    display: 'inline-block',
+    padding: '2px 8px',
+    borderRadius: 999,
+    background,
+    color,
+    border: `1px solid ${border}`,
+    fontSize: 11,
+    fontWeight: 700,
+    whiteSpace: 'nowrap',
+  }
+}
+
+function platformLabel(platform?: string | null) {
+  const p = (platform || '').toLowerCase()
+  if (!p) return '-'
+  if (p === 'instagram') return 'Instagram'
+  if (p === 'facebook') return 'Facebook'
+  if (p === 'linkedin') return 'LinkedIn'
+  if (p === 'tiktok') return 'TikTok'
+  if (p === 'youtube') return 'YouTube'
+  return platform || '-'
+}
+
+function platformBadgeStyle(platform?: string | null): React.CSSProperties {
+  const p = (platform || '').toLowerCase()
+
+  let background = '#202020'
+  let color = '#d1d5db'
+  let border = '#333'
+
+  if (p === 'instagram') {
+    background = 'rgba(217,70,239,0.14)'
+    color = '#f5b3ff'
+    border = 'rgba(217,70,239,0.35)'
+  } else if (p === 'facebook') {
+    background = 'rgba(59,130,246,0.14)'
+    color = '#93c5fd'
+    border = 'rgba(59,130,246,0.35)'
+  } else if (p === 'linkedin') {
+    background = 'rgba(14,165,233,0.14)'
+    color = '#7dd3fc'
+    border = 'rgba(14,165,233,0.35)'
+  } else if (p === 'tiktok') {
+    background = 'rgba(244,63,94,0.14)'
+    color = '#fda4af'
+    border = 'rgba(244,63,94,0.35)'
+  } else if (p === 'youtube') {
+    background = 'rgba(239,68,68,0.14)'
+    color = '#fca5a5'
+    border = 'rgba(239,68,68,0.35)'
+  }
+
+  return {
+    fontSize: 11,
+    padding: '3px 8px',
+    borderRadius: 999,
+    background,
+    border: `1px solid ${border}`,
+    color,
+    whiteSpace: 'nowrap',
+  }
+}
+
+const inputStyle: React.CSSProperties = {
+  padding: '10px 12px',
+  borderRadius: 8,
+  border: '1px solid #3a3a3a',
+  background: '#0f0f0f',
+  color: '#fff',
+  minWidth: 240,
+}
+
+const selectStyle: React.CSSProperties = {
+  padding: '10px 12px',
+  borderRadius: 8,
+  border: '1px solid #3a3a3a',
+  background: '#0f0f0f',
+  color: '#fff',
+}
+
+const buttonStyle: React.CSSProperties = {
+  padding: '10px 14px',
+  borderRadius: 8,
+  border: '1px solid #3a3a3a',
+  background: '#0f0f0f',
+  color: '#fff',
+  cursor: 'pointer',
+}
+
+const primaryButtonStyle: React.CSSProperties = {
+  ...buttonStyle,
+  background: '#1f5f32',
+  border: '1px solid #2f7d42',
+}
+
+const metaBoxStyle: React.CSSProperties = {
+  border: '1px solid #2a2a2a',
+  borderRadius: 10,
+  padding: 8,
+  background: '#111',
+}
+
+const metaLabelStyle: React.CSSProperties = {
+  fontSize: 11,
+  color: '#9ca3af',
+  marginBottom: 4,
+}
+
+const metaValueStyle: React.CSSProperties = {
+  fontSize: 12,
+  color: '#fff',
+  wordBreak: 'break-all',
+}
+
+const countBadgeStyle: React.CSSProperties = {
+  fontSize: 12,
+  padding: '3px 8px',
+  borderRadius: 999,
+  background: '#1f1f1f',
+  border: '1px solid #333',
+  color: '#d1d5db',
+}
+
+const detailPanelStyle: React.CSSProperties = {
+  border: '1px solid #2a2a2a',
+  borderRadius: 14,
+  background: '#101010',
+  padding: 14,
+  height: 'fit-content',
+  position: 'sticky',
+  top: 12,
+}
+
+const overlayStyle: React.CSSProperties = {
+  position: 'fixed',
+  inset: 0,
+  background: 'rgba(0,0,0,0.45)',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  zIndex: 60,
+}
+
+const confirmBoxStyle: React.CSSProperties = {
+  width: 420,
+  maxWidth: '92vw',
+  background: '#121212',
+  border: '1px solid #2a2a2a',
+  borderRadius: 14,
+  padding: 18,
+  color: '#fff',
+}
+
+const toastWrapStyle: React.CSSProperties = {
+  position: 'fixed',
+  top: 18,
+  right: 18,
+  zIndex: 70,
+  display: 'grid',
+  gap: 8,
+}
+
+function toastStyle(kind: 'success' | 'error' | 'info'): React.CSSProperties {
+  let background = '#1f2937'
+  let border = '#374151'
+  let color = '#fff'
+
+  if (kind === 'success') {
+    background = 'rgba(22,163,74,0.18)'
+    border = 'rgba(22,163,74,0.4)'
+    color = '#bbf7d0'
+  } else if (kind === 'error') {
+    background = 'rgba(239,68,68,0.18)'
+    border = 'rgba(239,68,68,0.4)'
+    color = '#fecaca'
+  } else {
+    background = 'rgba(59,130,246,0.18)'
+    border = 'rgba(59,130,246,0.4)'
+    color = '#bfdbfe'
+  }
+
+  return {
+    minWidth: 240,
+    maxWidth: 360,
+    padding: '10px 12px',
+    borderRadius: 12,
+    border: `1px solid ${border}`,
+    background,
+    color,
+    fontSize: 13,
+    boxShadow: '0 8px 22px rgba(0,0,0,0.28)',
+  }
+}
+
+const platformCardStyle: React.CSSProperties = {
+  border: '1px solid #262626',
+  borderRadius: 14,
+  padding: 12,
+  background: '#101010',
+}
+
+const progressTrackStyle: React.CSSProperties = {
+  height: 10,
+  borderRadius: 999,
+  background: '#1b1b1b',
+  border: '1px solid #2a2a2a',
+  overflow: 'hidden',
+}
+
+const progressFillStyle: React.CSSProperties = {
+  height: '100%',
+  borderRadius: 999,
+  background: 'linear-gradient(90deg, #2563eb 0%, #22c55e 100%)',
+}

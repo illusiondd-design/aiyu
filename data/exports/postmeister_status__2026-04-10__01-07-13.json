@@ -1,0 +1,21 @@
+{
+  "generated_at": "2026-04-09T23:07:13.022Z",
+  "total_leads": 2,
+  "open_leads": 0,
+  "closed_leads": 2,
+  "hot_leads": 0,
+  "warm_leads": 0,
+  "cold_leads": 2,
+  "overdue_followups": 0,
+  "today_followups": 0,
+  "reminder_marked": 0,
+  "by_status": {
+    "closed": 2
+  },
+  "by_priority": {
+    "low": 2
+  },
+  "by_package": {
+    "proship": 2
+  }
+}

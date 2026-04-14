@@ -1,0 +1,72 @@
+cd /var/www/aiyu
+
+# Demo Ordner erstellen
+mkdir -p public/demo
+
+# Dummy Videos erzeugen (funktioniert auch ohne echte MP4)
+echo "demo" > public/demo/short-01.mp4
+echo "demo" > public/demo/short-02.mp4
+echo "demo" > public/demo/short-03.mp4
+
+# ContentMachine.tsx patchen
+cat > components/ContentMachine.tsx << 'EOF'
+'use client'
+
+import ResultBoard, { ShortItem } from '@/components/ResultBoard'
+
+export default function ContentMachine() {
+
+  const items: ShortItem[] = [
+    {
+      id: '1',
+      title: 'Short 01',
+      hook: 'So sparst du Zeit bei Social Media',
+      status: 'ready',
+      duration: '0:24',
+      platform: 'Instagram Reels',
+      caption: 'Kurzer Beispieltext für den Post mit klarem Mehrwert und Fokus auf einfache Umsetzung.',
+      cta: 'Jetzt Kontakt aufnehmen.',
+      hashtags: ['#socialmedia', '#kistudiolabs', '#contentmarketing'],
+      previewUrl: '/demo/short-01.mp4',
+      downloadUrl: '/demo/short-01.mp4',
+    },
+    {
+      id: '2',
+      title: 'Short 02',
+      hook: 'Warum viele Unternehmen bei Content hängen bleiben',
+      status: 'review',
+      duration: '0:31',
+      platform: 'TikTok',
+      caption: 'Viele wissen, dass Sichtbarkeit wichtig ist. Im Alltag fehlt aber oft die Zeit für saubere Umsetzung.',
+      cta: 'Mehr erfahren.',
+      hashtags: ['#sichtbarkeit', '#unternehmen', '#shortcontent'],
+      previewUrl: '/demo/short-02.mp4',
+      downloadUrl: '/demo/short-02.mp4',
+    },
+    {
+      id: '3',
+      title: 'Short 03',
+      hook: 'Der erste Schritt zu planbarem Content',
+      status: 'processing',
+      duration: '0:18',
+      platform: 'YouTube Shorts',
+      caption: 'Ein gutes System spart Zeit, schafft Struktur und sorgt für gleichmäßige Inhalte.',
+      cta: 'System anfragen.',
+      hashtags: ['#youtubeShorts', '#contentsystem'],
+      previewUrl: '/demo/short-03.mp4',
+      downloadUrl: '/demo/short-03.mp4',
+    },
+  ]
+
+  return (
+    <div className="p-6">
+      <ResultBoard items={items} />
+    </div>
+  )
+}
+EOF
+
+# Build + Restart
+npm run build
+pm2 restart aiyu
+pm2 save

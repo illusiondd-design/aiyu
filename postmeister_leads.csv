@@ -1,0 +1,3 @@
+id;name;email;requested_package;lead_score;lead_type;priority;status;hot_alert_sent;follow_up_at;closed;created_at;internal_note;message
+ea04d1e9-a31d-49d8-ae82-f64d86e2970a;Hot Lead Final;info@ki-studio-labs.de;proship;29;cold;low;closed;false;2026-04-12T22:36:25.461Z;true;2026-04-09T20:37:12.805Z;;Finaler Test Hot Lead
+6cff0685-ea7e-4d20-8bdc-0196ded1f2eb;;;proship;19;cold;low;closed;false;2026-04-12T22:36:25.225Z;true;2026-04-09T15:17:02.010Z;;Ich interessiere mich für das Paket ProShip und möchte weitere Informationen zur Freischaltung erhalten.
